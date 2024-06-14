@@ -1,3 +1,12 @@
 [submodule "components/arduino"]
 	path = components/arduino
 	url = git@github.com:espressif/arduino-esp32.git
+[submodule "components/DFPlayer"]
+	path = components/DFPlayer
+	url = git@github.com:enjoyneering/DFPlayer.git
+[submodule "components/DFPlayer-idf"]
+	path = components/DFPlayer-idf
+	url = git@github.com:niliha/DFPlayer-idf.git
+[submodule "components/DFPlayerMini_Fast-idf"]
+	path = components/DFPlayerMini_Fast-idf
+	url = git@github.com:niliha/DFPlayerMini_Fast-idf.git
