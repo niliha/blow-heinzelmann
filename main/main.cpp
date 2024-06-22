@@ -1,127 +1,101 @@
-#include <Arduino.h>
-#include <DFPlayer.h>
-#include "driver/rtc_io.h"
+#include "Arduino.h"
+#include "DFRobotDFPlayerMini.h"
+#include "esp_log.h"
 
-#define MP3_SERIAL_SPEED 9600   // DFPlayer Mini suport only 9600-baud
-#define MP3_SERIAL_TIMEOUT 1000 // average DFPlayer response timeout 200msec..300msec for YX5200/AAxxxx chip & 350msec..500msec for GD3200B/MH2024K chip
-
-DFPlayer mp3; // connect DFPlayer RX-pin to GPIO15(TX) & DFPlayer TX-pin to GPIO13(RX)
-constexpr auto WAKEUP_PIN = GPIO_NUM_2;
-constexpr auto BUSY_PIN = 15;
+constexpr int MOSFET_PIN = 6;
+constexpr int BLOW_FOLDER_NUM = 1;
+constexpr int HEINZELMANN_FOLDER_NUM = 2;
+constexpr int VOLUME_PERCENT = 50;
 
 RTC_DATA_ATTR int bootCount = 0;
+DFRobotDFPlayerMini player;
 
-void print_wakeup_reason()
+void enterDeepSleep()
 {
-    esp_sleep_wakeup_cause_t wakeup_reason;
-
-    wakeup_reason = esp_sleep_get_wakeup_cause();
-
-    switch (wakeup_reason)
-    {
-    case ESP_SLEEP_WAKEUP_EXT0:
-        Serial.println("Wakeup caused by external signal using RTC_IO");
-        break;
-    case ESP_SLEEP_WAKEUP_EXT1:
-        Serial.println("Wakeup caused by external signal using RTC_CNTL");
-        break;
-    case ESP_SLEEP_WAKEUP_TIMER:
-        Serial.println("Wakeup caused by timer");
-        break;
-    case ESP_SLEEP_WAKEUP_TOUCHPAD:
-        Serial.println("Wakeup caused by touchpad");
-        break;
-    case ESP_SLEEP_WAKEUP_ULP:
-        Serial.println("Wakeup caused by ULP program");
-        break;
-    default:
-        Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
-        break;
-    }
-}
-
-void enter_deep_sleep()
-{
-    // Configure Pull-Up on wakeup pin
+    // Configure pull-up resistor on wakeup pin that stays enabled during deep sleep
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
     rtc_gpio_pulldown_dis(WAKEUP_PIN);
     rtc_gpio_pullup_en(WAKEUP_PIN);
 
+    ESP_LOGI("Entering deep sleep...");
     esp_sleep_enable_ext1_wakeup(1ULL << WAKEUP_PIN, ESP_EXT1_WAKEUP_ANY_LOW);
-    printf("Entering deep sleep\n");
     esp_deep_sleep_start();
-    printf("Should never be printed\n");
+}
+
+void initializePlayer()
+{
+    ESP_LOGI("Initializing DFPlayer...");
+    if (!player.begin(Serial1, /*isACK = */ true, /*doReset = */ true))
+    {
+        ESP_LOGE("Could not initialize DFPlayer. Restarting...");
+        ESP.restart();
+    }
+
+    player.volume(map(VOLUME_PERCENT, 0, 100, 0, 30));
+}
+
+void awaitPlaybackFinished(int timeout_seconds)
+{
+    int timeoutMillis = timeout_seconds * 1000;
+    auto startMillis = millis();
+
+    ESP_LOGI("Waiting for track to finish...");
+    while (millis() - startMillis < timeoutMillis)
+    {
+        if (player.available() && player.readType() == DFPlayerPlayFinished)
+        {
+            ESP_LOGI("Track finished");
+            return;
+        }
+        delay(100);
+    }
+
+    ESP_LOGE("Timed out waiting %d seconds for track to finish", timeout_seconds);
+}
+
+awaitPlaybackFinished()
+{
+    awaitPlaybackFinished(30);
 }
 
 extern "C" void app_main()
 {
     initArduino();
 
-    Serial.begin(115200);
-    Serial1.begin(9600);
-    while (!Serial || !Serial1)
+    ESP_LOGI("Boot count: %d", ++bootCount);
+    if (bootCount == 1)
+    {
+        ESP_LOGI("Entering deep sleep on first boot...");
+        enterDeepSleep();
+    }
+
+    pinMode(MOSFET_PIN, OUTPUT);
+    digitalWrite(MOSFET_PIN, HIGH);
+
+    Serial0.begin(115200); // Serial log
+    Serial1.begin(9600);   // DFPlayer Mini
+    while (!Serial0 || !Serial1)
     {
         delay(100);
     }
 
-    pinMode(BUSY_PIN, INPUT_PULLUP);
+    initializePlayer();
 
-    // Increment boot number and print it every reboot
-    ++bootCount;
-    Serial.println("Boot number: " + String(bootCount));
-
-    print_wakeup_reason();
-
-    printf("Initializing MP3 player...\n");
-    mp3.begin(Serial1, MP3_SERIAL_TIMEOUT, DFPLAYER_MINI, true);
-    // mp3.wakeup(2);
-    // delay(1000);
-    // mp3.stop();
-    // delay(1000);
-    // mp3.reset();
-    // delay(1000);
-    // mp3.setSource(2);
-    // delay(1000);
-    // mp3.setEQ(0);
-    // delay(1000);
-    // mp3.setVolume(20);
-    // delay(1000);
-
-    auto numFolders = mp3.getTotalFolders();
-    Serial.print("Folders: ");
-    Serial.println(numFolders);
-    delay(2000);
-
-    for (int i = 1; i <= numFolders; i++)
+    int blowCount = player.readFileCountsInFolder(BLOW_FOLDER_NUM);
+    int heinzelmannCount = player.readFileCountsInFolder(HEINZELMANN_FOLDER_NUM);
+    if (blowCount <= 0 || heinzelmannCount <= 0)
     {
-        auto numTracks = mp3.getTotalTracksFolder(i);
-        Serial.print(numTracks);
-        Serial.print(" tracks in folder ");
-        Serial.println(i);
-        delay(2000);
+        ESP_LOGE("Could not find sound samples on SD card. Restarting...");
+        ESP.restart();
     }
 
-    for (int i = 0; i < 999; i++)
-    {
+    ESP_LOGI("Playing blow...");
+    player.playFolder(BLOW_FOLDER_NUM, random(1, blowCount + 1));
+    awaitPlaybackFinished();
 
-        Serial.println("Playing blow");
-        mp3.playFolder(1, random(1, 4));
-        delay(2000);
-        while (digitalRead(BUSY_PIN) == LOW)
-        {
-            Serial.println("Waiting for track to finish...");
-            delay(500);
-        }
+    ESP_LOGI("Playing heinzelmann...");
+    player.playFolder(HEINZELMANN_FOLDER_NUM, random(1, heinzelmannCount + 1));
+    awaitPlaybackFinished();
 
-        Serial.println("Playing heinzelmann");
-        mp3.playFolder(2, random(1, 4));
-        delay(2000);
-        while (digitalRead(BUSY_PIN) == LOW)
-        {
-            Serial.println("Waiting for track to finish...");
-            delay(500);
-        }
-    }
-
-    enter_deep_sleep();
+    enterDeepSleep();
 }
